@@ -171,3 +171,51 @@ CREATE TABLE license_event (
 );
 CREATE INDEX idx_le_limit_hit    ON license_event (license_limit_hit, triggered_at DESC);
 CREATE INDEX idx_le_null_session ON license_event (triggered_at DESC) WHERE session_id IS NULL;
+
+-- ── TABLE 9: LEG_DISCONNECT  (1:1 with session_leg)
+--    Captures why and when each individual leg ended.
+--    Gives you per-participant disconnect details, not just session-level.
+CREATE TABLE leg_disconnect (
+    leg_disconnect_id  BIGINT       NOT NULL GENERATED ALWAYS AS IDENTITY,
+    leg_id             BIGINT       NOT NULL,          -- the leg that ended
+    session_id         BIGINT       NOT NULL,          -- denorm for direct session queries
+    participant_type   VARCHAR(16)  NOT NULL
+                                    CHECK (participant_type IN ('customer','agent','supervisor','bot')),
+    -- which participant ended (mirrors session_leg ID columns)
+    customer_id        BIGINT,
+    agent_id           BIGINT,
+    supervisor_id      BIGINT,
+    bot_id             BIGINT,
+    -- timing
+    leg_start          TIMESTAMP    NOT NULL,          -- copied from session_leg.leg_start
+    leg_end            TIMESTAMP    NOT NULL DEFAULT NOW(),
+    duration_seconds   INT          GENERATED ALWAYS AS
+                                    (EXTRACT(EPOCH FROM (leg_end - leg_start))::INT) STORED,
+    -- why did this leg end?
+    end_reason         VARCHAR(32)  NOT NULL
+                                    CHECK (end_reason IN (
+                                      'transferred','completed','dropped',
+                                      'license_exceeded','timeout','error')),
+    reason_detail      TEXT,
+    error_code         VARCHAR(32),
+    -- was this leg killed by a license limit?
+    is_license_limit   BOOLEAN      NOT NULL DEFAULT FALSE,
+    tcomm_triggered    BOOLEAN      NOT NULL DEFAULT FALSE,
+    -- if transferred: which transfer caused this leg to end?
+    transfer_id        BIGINT,                         -- FK to transfer_event (nullable)
+    next_leg_id        BIGINT,                         -- the leg that replaced this one
+    raw_payload        JSONB,
+
+    CONSTRAINT pk_leg_disconnect   PRIMARY KEY (leg_disconnect_id),
+    CONSTRAINT fk_ld_leg           FOREIGN KEY (leg_id)       REFERENCES session_leg(leg_id),
+    CONSTRAINT fk_ld_session       FOREIGN KEY (session_id)   REFERENCES chat_session(session_id) ON DELETE CASCADE,
+    CONSTRAINT fk_ld_transfer      FOREIGN KEY (transfer_id)  REFERENCES transfer_event(transfer_id),
+    CONSTRAINT fk_ld_next_leg      FOREIGN KEY (next_leg_id)  REFERENCES session_leg(leg_id),
+    CONSTRAINT uq_ld_leg           UNIQUE (leg_id)             -- one disconnect record per leg
+);
+CREATE INDEX idx_ld_session       ON leg_disconnect (session_id);
+CREATE INDEX idx_ld_leg           ON leg_disconnect (leg_id);
+CREATE INDEX idx_ld_end_reason    ON leg_disconnect (end_reason, leg_end DESC);
+CREATE INDEX idx_ld_license       ON leg_disconnect (is_license_limit, leg_end DESC) WHERE is_license_limit = TRUE;
+CREATE INDEX idx_ld_agent         ON leg_disconnect (agent_id, leg_end DESC)         WHERE agent_id IS NOT NULL;
+CREATE INDEX idx_ld_duration      ON leg_disconnect (duration_seconds DESC);

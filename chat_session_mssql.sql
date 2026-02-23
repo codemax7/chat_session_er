@@ -194,3 +194,48 @@ GO
 CREATE NONCLUSTERED INDEX IDX_le_limit_hit    ON license_event (license_limit_hit, triggered_at DESC);
 CREATE NONCLUSTERED INDEX IDX_le_null_session ON license_event (triggered_at DESC) WHERE session_id IS NULL;
 GO
+
+-- ── TABLE 9: LEG_DISCONNECT  (1:1 with session_leg)
+CREATE TABLE leg_disconnect (
+    leg_disconnect_id  BIGINT        NOT NULL IDENTITY(1,1),
+    leg_id             BIGINT        NOT NULL,
+    session_id         BIGINT        NOT NULL,
+    participant_type   NVARCHAR(16)  NOT NULL
+                                     CONSTRAINT chk_ld_type CHECK (
+                                       participant_type IN ('customer','agent','supervisor','bot')),
+    customer_id        BIGINT        NULL,
+    agent_id           BIGINT        NULL,
+    supervisor_id      BIGINT        NULL,
+    bot_id             BIGINT        NULL,
+    leg_start          DATETIME2     NOT NULL,
+    leg_end            DATETIME2     NOT NULL DEFAULT SYSDATETIME(),
+    -- duration computed column (seconds)
+    duration_seconds   AS (DATEDIFF(SECOND, leg_start, leg_end)) PERSISTED,
+    end_reason         NVARCHAR(32)  NOT NULL
+                                     CONSTRAINT chk_ld_reason CHECK (
+                                       end_reason IN (
+                                         'transferred','completed','dropped',
+                                         'license_exceeded','timeout','error')),
+    reason_detail      NVARCHAR(MAX) NULL,
+    error_code         NVARCHAR(32)  NULL,
+    is_license_limit   BIT           NOT NULL DEFAULT 0,
+    tcomm_triggered    BIT           NOT NULL DEFAULT 0,
+    transfer_id        BIGINT        NULL,
+    next_leg_id        BIGINT        NULL,
+    raw_payload        NVARCHAR(MAX) NULL,
+
+    CONSTRAINT PK_leg_disconnect   PRIMARY KEY CLUSTERED (leg_disconnect_id),
+    CONSTRAINT FK_ld_leg           FOREIGN KEY (leg_id)      REFERENCES session_leg(leg_id),
+    CONSTRAINT FK_ld_session       FOREIGN KEY (session_id)  REFERENCES chat_session(session_id) ON DELETE CASCADE,
+    CONSTRAINT FK_ld_transfer      FOREIGN KEY (transfer_id) REFERENCES transfer_event(transfer_id),
+    CONSTRAINT FK_ld_next_leg      FOREIGN KEY (next_leg_id) REFERENCES session_leg(leg_id),
+    CONSTRAINT UQ_ld_leg           UNIQUE (leg_id)
+);
+GO
+CREATE NONCLUSTERED INDEX IDX_ld_session    ON leg_disconnect (session_id);
+CREATE NONCLUSTERED INDEX IDX_ld_leg        ON leg_disconnect (leg_id);
+CREATE NONCLUSTERED INDEX IDX_ld_end_reason ON leg_disconnect (end_reason, leg_end DESC);
+CREATE NONCLUSTERED INDEX IDX_ld_license    ON leg_disconnect (is_license_limit, leg_end DESC) WHERE is_license_limit = 1;
+CREATE NONCLUSTERED INDEX IDX_ld_agent      ON leg_disconnect (agent_id, leg_end DESC) WHERE agent_id IS NOT NULL;
+CREATE NONCLUSTERED INDEX IDX_ld_duration   ON leg_disconnect (duration_seconds DESC);
+GO
